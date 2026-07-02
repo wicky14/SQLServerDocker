@@ -60,8 +60,12 @@ class DockerOps:
         return containers
 
     @staticmethod
-    def exec_command(container, cmd, timeout=120):
-        docker_cmd = ["docker", "exec", container] + cmd
+    def exec_command(container, cmd, timeout=120, user=None):
+        docker_cmd = ["docker", "exec"]
+        if user:
+            docker_cmd.extend(["--user", str(user)])
+        docker_cmd.append(container)
+        docker_cmd.extend(cmd)
         proc = DockerOps._run(docker_cmd, timeout=timeout)
         if proc.returncode != 0:
             raise DockerExecError(

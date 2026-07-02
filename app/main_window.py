@@ -25,17 +25,13 @@ from .docker_ops import DockerOps, DockerExecError
 
 
 def _get_config_path():
-    paths = [
-        os.path.join(os.path.expanduser("~/.config/sqlserver-docker-manager"), "config.json"),
-    ]
-    if hasattr(sys, '_MEIPASS'):
-        paths.append(os.path.join(sys._MEIPASS, "config.json"))
-    exe_dir = os.path.dirname(os.path.abspath(__file__))
-    paths.append(os.path.join(os.path.dirname(exe_dir), "config.json"))
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    return paths[0]
+    xdg = os.path.join(os.path.expanduser("~/.config/sqlserver-docker-manager"), "config.json")
+    if not getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local = os.path.join(exe_dir, "config.json")
+        if os.path.exists(local):
+            return local
+    return xdg
 
 
 CONFIG_FILE = _get_config_path()
@@ -625,6 +621,21 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec_() == QDialog.Accepted:
             new_db_name = dlg.get_new_db_name()
+
+            reply = QMessageBox.warning(
+                self, "Konfirmasi Restore",
+                "Yakin ingin merestore database '{}'?\n\n"
+                "Database yang sudah ada dengan nama yang sama "
+                "akan ditimpa dan tidak bisa dikembalikan.".format(new_db_name),
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                try:
+                    DockerOps.remove_file(self.current_container, container_tmp_path)
+                except Exception:
+                    pass
+                return
+
             self._log("Memulai restore database '{}'...".format(new_db_name))
             self._set_processing(True)
 

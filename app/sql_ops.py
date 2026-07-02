@@ -90,15 +90,24 @@ class SqlOps:
     def get_filelistonly(self, bak_path_in_container):
         output = self._run_sqlcmd(
             "RESTORE FILELISTONLY FROM DISK = N'{}'".format(bak_path_in_container),
-            extra_flags=["-s", "|", "-h", "-1"]
+            extra_flags=["-s", "|"]
         )
-        return self._parse_filelistonly_delimited(output)
+        files = self._parse_filelistonly_delimited(output)
+        if not files:
+            raise DockerExecError(
+                "Gagal membaca struktur file backup.\n"
+                "Path: {}\n\n"
+                "Output sqlcmd:\n{}".format(bak_path_in_container, output)
+            )
+        return files
 
     def _parse_filelistonly_delimited(self, output):
         files = []
         for line in output.strip().split("\n"):
             line = line.strip()
             if not line:
+                continue
+            if "LogicalName" in line or line.startswith("---") or line.startswith("-"):
                 continue
             parts = line.split("|")
             if len(parts) < 3:

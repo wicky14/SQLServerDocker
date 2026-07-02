@@ -139,6 +139,7 @@ class LoadFileListWorker(QThread):
 
             DockerOps.mkdir(self.container, "/var/opt/mssql/backup")
             DockerOps.copy_to_container(self.container, self.bak_path, container_tmp)
+            DockerOps.exec_command(self.container, ["chmod", "644", container_tmp], user="0")
 
             files = sql.get_filelistonly(container_tmp)
             if not files:
