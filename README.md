@@ -30,7 +30,7 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 
 ### Opsi 1 — Unduh Executable (Recommended)
 
-1. Unduh file `MSSQL-Docker-Manager` dari [Releases](https://github.com/username/sqlserver-docker-manager/releases)
+1. Unduh file `MSSQL-Docker-Manager` dari [Releases](https://github.com/wicky14/SQLServerDocker/releases)
 2. Beri izin eksekusi:
    ```bash
    chmod +x MSSQL-Docker-Manager
