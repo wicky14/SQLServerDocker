@@ -1,0 +1,10 @@
+{
+    "backup_dir": "~/backups/mssql",
+    "containers": [
+        {
+            "name": "sql1",
+            "sa_password": "",
+            "container_backup_dir": "/var/opt/mssql/backup"
+        }
+    ]
+}
