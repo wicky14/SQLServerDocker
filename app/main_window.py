@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
         self.databases = []
         self.current_container = None
         self.password = ""
+        self._connected = False
         self.container_backup_dir = "/var/opt/mssql/backup"
 
         self.setWindowTitle("SQL Server Docker Manager")
@@ -479,6 +480,10 @@ class MainWindow(QMainWindow):
         self.container_backup_dir = "/var/opt/mssql/backup"
 
     def _connect_container(self):
+        if self._connected:
+            self._disconnect_container()
+            return
+
         container = self.container_combo.currentText().strip()
         container = container.replace(" (tidak running)", "")
         password = self.password_input.text().strip()
@@ -494,6 +499,10 @@ class MainWindow(QMainWindow):
         self.password = password
         self._log("Menghubungkan ke container '{}'...".format(container))
         self.status_label.setText("Menghubungkan...")
+        self.container_combo.setEnabled(False)
+        self.password_input.setEnabled(False)
+        self.refresh_btn.setEnabled(False)
+        self.connect_btn.setText("Connecting...")
         self.connect_btn.setEnabled(False)
 
         self._save_container_password(container, password)
@@ -501,6 +510,19 @@ class MainWindow(QMainWindow):
         self.worker = TestConnectionWorker(container, password)
         self.worker.finished.connect(self._on_connection_result)
         self.worker.start()
+
+    def _disconnect_container(self):
+        self.current_container = None
+        self.password = ""
+        self._connected = False
+        self.container_combo.setEnabled(True)
+        self.password_input.setEnabled(True)
+        self.refresh_btn.setEnabled(True)
+        self.connect_btn.setText("Connect")
+        self.connect_btn.setEnabled(True)
+        self.db_list.clear()
+        self.status_label.setText("Terputus.")
+        self._log("Terputus dari container.")
 
     def _save_container_password(self, name, password):
         for c in self.config["containers"]:
@@ -517,12 +539,22 @@ class MainWindow(QMainWindow):
         save_config(self.config)
 
     def _on_connection_result(self, ok, container):
-        self.connect_btn.setEnabled(True)
         if ok:
+            self._connected = True
+            self.connect_btn.setText("Disconnect")
+            self.connect_btn.setEnabled(True)
             self._log("Terhubung ke container '{}'.".format(container))
             self.status_label.setText("Terhubung ke '{}'. Mengambil daftar database...".format(container))
             self._load_databases()
         else:
+            self.current_container = None
+            self.password = ""
+            self._connected = False
+            self.container_combo.setEnabled(True)
+            self.password_input.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
+            self.connect_btn.setText("Connect")
+            self.connect_btn.setEnabled(True)
             self._log("Gagal terhubung ke container '{}'. Periksa password.".format(container))
             self.status_label.setText("Koneksi gagal. Periksa password SA.")
             QMessageBox.warning(

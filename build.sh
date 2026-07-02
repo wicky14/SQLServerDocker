@@ -4,6 +4,13 @@
 
 set -e
 
+# Auto virtual environment
+if [ ! -d "venv" ]; then
+    echo "Membuat virtual environment..."
+    python -m venv venv
+fi
+source venv/bin/activate
+
 echo "Memeriksa dependensi..."
 pip install -r requirements.txt -q
 
