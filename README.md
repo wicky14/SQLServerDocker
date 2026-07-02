@@ -17,25 +17,8 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 
 ## Tangkapan Layar
 
-```
-+----------------------------------------------------+
-| SQL Server Docker Manager                          |
-+----------------------------------------------------+
-| Container: [sql1  ▼]  Password: [••••••] [Connect] |
-+----------------------------------------------------+
-| Database:                    | Aksi:                |
-|  - MyDB                     | [ Backup Database  ] |
-|  - TestDB                   | [ Restore Database ] |
-|  - WarehouseDB              | [ Copy Database    ] |
-|                              | [ Hapus Database   ] |
-|                              |                      |
-|                              | [ Buka Folder Backup ]|
-+----------------------------------------------------+
-| Proses: ████████████░░░░ 75%                       |
-| [12:00:01] Backup database MyDB...                 |
-| [12:00:05] Backup selesai!                         |
-+----------------------------------------------------+
-```
+<img width="760" height="632" alt="Aplikasi" src="https://github.com/user-attachments/assets/ab6ca5b8-5f20-4f9a-a9b8-2a6a17185e16" />
+
 
 ## Persyaratan Sistem
 
