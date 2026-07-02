@@ -3,8 +3,21 @@ import os
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
 
 from app import MainWindow
+from app.installer import handle as installer_handle
+
+
+def get_icon_path():
+    if hasattr(sys, '_MEIPASS'):
+        p = os.path.join(sys._MEIPASS, "app", "icon", "icon.png")
+        if os.path.exists(p):
+            return p
+    p = os.path.join(os.path.dirname(__file__), "app", "icon", "icon.png")
+    if os.path.exists(p):
+        return p
+    return None
 
 
 def main():
@@ -14,6 +27,13 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SQL Server Docker Manager")
     app.setOrganizationName("MSSQL-Docker-Tools")
+
+    icon_path = get_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+
+    if installer_handle():
+        sys.exit(0)
 
     style = """
     QGroupBox {

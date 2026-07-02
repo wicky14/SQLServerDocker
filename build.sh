@@ -16,6 +16,7 @@ pyinstaller \
     --windowed \
     --name "MSSQL-Docker-Manager" \
     --add-data "config.json:." \
+    --add-data "app/icon/icon.png:app/icon" \
     --distpath dist \
     main.py
 

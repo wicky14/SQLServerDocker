@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import datetime
 
@@ -23,7 +24,21 @@ from .workers import (
 from .docker_ops import DockerOps, DockerExecError
 
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
+def _get_config_path():
+    paths = [
+        os.path.join(os.path.expanduser("~/.config/sqlserver-docker-manager"), "config.json"),
+    ]
+    if hasattr(sys, '_MEIPASS'):
+        paths.append(os.path.join(sys._MEIPASS, "config.json"))
+    exe_dir = os.path.dirname(os.path.abspath(__file__))
+    paths.append(os.path.join(os.path.dirname(exe_dir), "config.json"))
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return paths[0]
+
+
+CONFIG_FILE = _get_config_path()
 
 
 def load_config():
@@ -46,8 +61,10 @@ def load_config():
 
 
 def save_config(cfg):
+    path = CONFIG_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        with open(CONFIG_FILE, "w") as f:
+        with open(path, "w") as f:
             json.dump(cfg, f, indent=4)
     except IOError:
         pass
