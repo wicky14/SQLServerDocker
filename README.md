@@ -12,7 +12,7 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 - **Restore Database** — Restore database dari file `.bak` lokal ke container (auto-detect logical files)
 - **Copy Database** — Copy database dalam satu container dengan nama baru (backup + restore otomatis)
 - **Hapus Database** — Hapus database dari container dengan konfirmasi ketik ulang nama
-- **Installer Bawaan** — Jalankan sekali, aplikasi terinstall ke sistem dengan icon di menu
+- **Installer Bawaan** — Jalankan sekali, aplikasi terinstall ke sistem
 - **Multi Container** — Deteksi otomatis semua container SQL Server yang berjalan
 - **Progress & Log** — Progress bar dan log real-time selama proses backup/restore/copy
 
@@ -129,7 +129,7 @@ File `config.json` dibuat otomatis di:
 | `sa_password` | Password SA SQL Server (disimpan setelah connect) |
 | `container_backup_dir` | Direktori backup sementara di dalam container |
 
-> **Catatan**: `config.json` tidak di-commit karena mengandung password. Gunakan `config.example.json` sebagai template.
+> **Catatan**: Gunakan `config.example.json` sebagai template.
 
 ## Struktur Proyek
 
