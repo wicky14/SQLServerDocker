@@ -9,20 +9,20 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 ## Fitur
 
 - **Backup Database** — Backup database SQL Server ke file `.bak` di folder lokal
-- **Restore Database** — Restore database dari file `.bak` lokal ke container
+- **Restore Database** — Restore database dari file `.bak` lokal ke container (auto-detect logical files)
 - **Copy Database** — Copy database dalam satu container dengan nama baru (backup + restore otomatis)
 - **Hapus Database** — Hapus database dari container dengan konfirmasi ketik ulang nama
+- **Installer Bawaan** — Jalankan sekali, aplikasi terinstall ke sistem dengan icon di menu
 - **Multi Container** — Deteksi otomatis semua container SQL Server yang berjalan
 - **Progress & Log** — Progress bar dan log real-time selama proses backup/restore/copy
 
 ## Tangkapan Layar
 
-<img width="760" height="632" alt="Aplikasi" src="https://github.com/user-attachments/assets/ab6ca5b8-5f20-4f9a-a9b8-2a6a17185e16" />
-
+<img width="760" alt="Aplikasi" src="https://github.com/user-attachments/assets/ab6ca5b8-5f20-4f9a-a9b8-2a6a17185e16" />
 
 ## Persyaratan Sistem
 
-- **OS**: Linux (diuji di Arch Linux, Ubuntu 22.04+)
+- **OS**: Linux x86_64 (Arch, EndeavourOS, Manjaro, Fedora, Ubuntu 22.04+, Debian 12+)
 - **Docker**: Docker Engine sudah terinstall dan berjalan
 - **Container**: SQL Server container sudah berjalan (image `mcr.microsoft.com/mssql/server`)
 
@@ -30,27 +30,26 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 
 ### Opsi 1 — Unduh Executable (Recommended)
 
-1. Unduh file `MSSQL-Docker-Manager` dari [Releases](https://github.com/wicky14/SQLServerDocker/releases)
-2. Beri izin eksekusi:
-   ```bash
-   chmod +x MSSQL-Docker-Manager
-   ```
-3. Jalankan:
-   ```bash
-   ./MSSQL-Docker-Manager
-   ```
+**Install:**
+```bash
+wget https://github.com/wicky14/SQLServerDocker/releases/latest/download/MSSQL-Docker-Manager
+chmod +x MSSQL-Docker-Manager
+./MSSQL-Docker-Manager
+# -> Klik "Ya" untuk install ke ~/.local/
+# -> Aplikasi muncul di menu (KDE/GNOME)
+# -> File download bisa dihapus
+```
+
+**Uninstall:** jalankan ulang file download, klik "Ya" untuk hapus.
+
+**Update:** hapus dulu via uninstall, lalu jalankan download baru.
 
 ### Opsi 2 — Jalankan dari Source
 
 ```bash
-# Clone repository
-git clone https://github.com/username/sqlserver-docker-manager.git
-cd sqlserver-docker-manager
-
-# Install dependensi
+git clone https://github.com/wicky14/SQLServerDocker.git
+cd SQLServerDocker
 pip install -r requirements.txt
-
-# Jalankan
 python main.py
 ```
 
@@ -105,7 +104,9 @@ pip install -r requirements.txt
 
 ## Konfigurasi
 
-File `config.json` dibuat otomatis setelah pertama kali menjalankan aplikasi:
+File `config.json` dibuat otomatis di:
+- **Setelah install**: `~/.config/sqlserver-docker-manager/config.json`
+- **Jalankan dari source**: direktori proyek
 
 ```json
 {
@@ -128,23 +129,28 @@ File `config.json` dibuat otomatis setelah pertama kali menjalankan aplikasi:
 | `sa_password` | Password SA SQL Server (disimpan setelah connect) |
 | `container_backup_dir` | Direktori backup sementara di dalam container |
 
+> **Catatan**: `config.json` tidak di-commit karena mengandung password. Gunakan `config.example.json` sebagai template.
+
 ## Struktur Proyek
 
 ```
-sqlserver-docker-manager/
+SQLServerDocker/
 ├── main.py                 # Entry point aplikasi
-├── config.json             # Konfigurasi
+├── config.example.json     # Contoh konfigurasi
 ├── requirements.txt        # Dependensi Python
 ├── build.sh                # Script build executable
-├── README.md               # Dokumentasi
+├── .gitignore              # Ignore config.json, dist/, build/
 ├── app/
 │   ├── __init__.py
+│   ├── icon/
+│   │   └── icon.png        # Icon aplikasi
+│   ├── installer.py        # Install/uninstall wizard
 │   ├── main_window.py      # GUI PyQt5
 │   ├── docker_ops.py       # Operasi Docker (exec, cp, ps)
 │   ├── sql_ops.py          # Operasi sqlcmd (backup, restore, dll)
 │   └── workers.py          # QThread untuk background task
 └── dist/
-    └── MSSQL-Docker-Manager # Executable (hasil build)
+    └── MSSQL-Docker-Manager # Executable (hasil build, di .gitignore)
 ```
 
 ## Troubleshooting
