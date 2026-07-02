@@ -29,7 +29,8 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 ## Instalasi
 
 ### Opsi 1 — Unduh Executable (Recommended)
-
+Unduh file executable di https://github.com/wicky14/SQLServerDocker/releases
+atau
 **Install:**
 ```bash
 wget https://github.com/wicky14/SQLServerDocker/releases/latest/download/MSSQL-Docker-Manager
