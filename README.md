@@ -30,6 +30,7 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 
 ### Opsi 1 — Unduh Executable (Recommended)
 Unduh file executable di https://github.com/wicky14/SQLServerDocker/releases
+klik 2x pada file unduhan
 atau
 **Install:**
 ```bash
