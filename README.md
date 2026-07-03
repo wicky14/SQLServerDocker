@@ -57,7 +57,6 @@ python main.py
 ### Opsi 3 — Build Executable Sendiri
 
 ```bash
-pip install -r requirements.txt
 ./build.sh
 # Hasil: dist/MSSQL-Docker-Manager
 ```
