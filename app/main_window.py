@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QLineEdit, QPushButton, QListWidget,
     QProgressBar, QTextEdit, QLabel, QGroupBox,
-    QMessageBox, QFileDialog, QDialog, QDialogButtonBox,
+    QMessageBox, QFileDialog, QDialog, QDialogButtonBox, QInputDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QSplitter, QFrame, QCheckBox, QGridLayout, QSizePolicy,
     QApplication, QStyle
@@ -19,7 +19,8 @@ from PyQt5.QtGui import QDesktopServices
 from .workers import (
     ListContainersWorker, ListDatabasesWorker, TestConnectionWorker,
     BackupWorker, LoadFileListWorker, RestoreWorker,
-    DropDatabaseWorker, CopyDatabaseWorker
+    DropDatabaseWorker, CopyDatabaseWorker,
+    ExportDowngradeWorker, ImportDowngradeWorker
 )
 from .docker_ops import DockerOps, DockerExecError
 
@@ -370,6 +371,20 @@ class MainWindow(QMainWindow):
         )
         self.copy_btn.clicked.connect(self._do_copy_database)
         action_layout.addWidget(self.copy_btn)
+
+        self.export_btn = self._make_action_button(
+            "Export Cross-Version",
+            "Export database sebagai schema + data (bcp) agar bisa di-restore ke versi SQL lebih rendah"
+        )
+        self.export_btn.clicked.connect(self._do_export_downgrade)
+        action_layout.addWidget(self.export_btn)
+
+        self.import_btn = self._make_action_button(
+            "Import Cross-Version",
+            "Import database dari hasil Export Cross-Version"
+        )
+        self.import_btn.clicked.connect(self._do_import_downgrade)
+        action_layout.addWidget(self.import_btn)
 
         self.drop_btn = self._make_action_button(
             "Hapus Database", "Hapus database dari container"
@@ -751,6 +766,114 @@ class MainWindow(QMainWindow):
             self.worker.finished.connect(self._on_copy_finished)
             self.worker.start()
 
+    def _do_export_downgrade(self):
+        if not self._check_connected():
+            return
+
+        selected = self.db_list.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "Peringatan", "Pilih database yang akan di-export.")
+            return
+
+        database = selected[0].text()
+        if database == "(Tidak ada database user)":
+            return
+
+        default_dir = os.path.expanduser(self.config.get("backup_dir", "~/backups/mssql"))
+        export_dir = QFileDialog.getExistingDirectory(
+            self, "Pilih folder untuk menyimpan export", default_dir
+        )
+        if not export_dir:
+            return
+
+        db_folder = os.path.join(export_dir, "{}_{}".format(
+            database, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ))
+        os.makedirs(db_folder, exist_ok=True)
+
+        self._set_processing(True)
+        self._log("Memulai export cross-version database '{}'...".format(database))
+
+        self.worker = ExportDowngradeWorker(
+            self.current_container, self.password,
+            database, db_folder, self.container_backup_dir
+        )
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_export_downgrade_finished)
+        self.worker.start()
+
+    def _on_export_downgrade_finished(self, success, result):
+        self._set_processing(False)
+        if success:
+            self._log("Export cross-version selesai: " + result)
+            self.status_label.setText("Export selesai.")
+            QMessageBox.information(
+                self, "Sukses",
+                "Export berhasil!\nFolder: " + result
+            )
+        else:
+            self._log("Export gagal: " + result)
+            self.status_label.setText("Export gagal.")
+            QMessageBox.critical(self, "Error", result)
+
+    def _do_import_downgrade(self):
+        if not self._check_connected():
+            return
+
+        default_dir = os.path.expanduser(self.config.get("backup_dir", "~/backups/mssql"))
+        import_dir = QFileDialog.getExistingDirectory(
+            self, "Pilih folder hasil export", default_dir
+        )
+        if not import_dir:
+            return
+
+        schema_file = None
+        for f in os.listdir(import_dir):
+            if f.endswith("_schema.sql"):
+                schema_file = f
+                break
+
+        if not schema_file:
+            QMessageBox.warning(self, "Error",
+                "Folder harus berisi file *_schema.sql hasil Export Cross-Version.")
+            return
+
+        db_name = schema_file.replace("_schema.sql", "")
+
+        new_db_name, ok = QInputDialog.getText(
+            self, "Nama Database Baru",
+            "Nama database tujuan:", text=db_name
+        )
+        if not ok or not new_db_name.strip():
+            return
+        new_db_name = new_db_name.strip()
+
+        self._set_processing(True)
+        self._log("Memulai import cross-version database '{}'...".format(new_db_name))
+
+        self.worker = ImportDowngradeWorker(
+            self.current_container, self.password,
+            new_db_name, import_dir, self.container_backup_dir
+        )
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_import_downgrade_finished)
+        self.worker.start()
+
+    def _on_import_downgrade_finished(self, success, result):
+        self._set_processing(False)
+        if success:
+            self._log("Import cross-version selesai: " + result)
+            self.status_label.setText("Import selesai.")
+            QMessageBox.information(
+                self, "Sukses",
+                "Import database '{}' berhasil!".format(result)
+            )
+            self._load_databases()
+        else:
+            self._log("Import gagal: " + result)
+            self.status_label.setText("Import gagal.")
+            QMessageBox.critical(self, "Error", result)
+
     def _open_backup_folder(self):
         backup_dir = os.path.expanduser(self.config.get("backup_dir", "~/backups/mssql"))
         os.makedirs(backup_dir, exist_ok=True)
@@ -770,6 +893,8 @@ class MainWindow(QMainWindow):
         self.backup_btn.setEnabled(not busy)
         self.restore_btn.setEnabled(not busy)
         self.copy_btn.setEnabled(not busy)
+        self.export_btn.setEnabled(not busy)
+        self.import_btn.setEnabled(not busy)
         self.drop_btn.setEnabled(not busy)
         self.connect_btn.setEnabled(not busy)
         self.progress_bar.setVisible(busy)

@@ -1,6 +1,7 @@
 import re
 import os
 import datetime
+import tempfile
 
 from .docker_ops import DockerOps, DockerExecError
 
@@ -144,6 +145,160 @@ class SqlOps:
         ).format(database, bak_path_in_container, with_str)
 
         self._run_sqlcmd(query, timeout=timeout)
+
+    def _get_bcp_path(self):
+        if not self.sqlcmd_path:
+            self._detect_sqlcmd()
+        return self.sqlcmd_path.replace("sqlcmd", "bcp")
+
+    def _run_bcp(self, args, timeout=300):
+        bcp = self._get_bcp_path()
+        cmd = [bcp] + args + ["-S", "localhost", "-U", "sa", "-P", self.password]
+        if "mssql-tools18" in bcp:
+            cmd.append("-C")
+        return DockerOps.exec_command(self.container, cmd, timeout=timeout)
+
+    def get_user_tables(self, database):
+        output = self._run_sqlcmd(
+            "USE [{}]; SET NOCOUNT ON; SELECT TABLE_SCHEMA, TABLE_NAME "
+            "FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' "
+            "ORDER BY TABLE_SCHEMA, TABLE_NAME".format(database),
+            extra_flags=["-s", "|", "-h", "-1"],
+            timeout=30
+        )
+        tables = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = line.split("|")
+            if len(parts) >= 2:
+                tables.append((parts[0].strip(), parts[1].strip()))
+        return tables
+
+    def get_column_info(self, database, schema, table):
+        query = (
+            "USE [{}]; SET NOCOUNT ON; SELECT "
+            "c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH, "
+            "c.IS_NULLABLE, c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.ORDINAL_POSITION, "
+            "COLUMNPROPERTY(OBJECT_ID('['+c.TABLE_SCHEMA+'].['+c.TABLE_NAME+']'), c.COLUMN_NAME, 'IsIdentity') "
+            "FROM INFORMATION_SCHEMA.COLUMNS c "
+            "WHERE c.TABLE_SCHEMA = '{}' AND c.TABLE_NAME = '{}' "
+            "ORDER BY c.ORDINAL_POSITION"
+        ).format(database, schema, table)
+        output = self._run_sqlcmd(query, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        columns = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 7:
+                columns.append({
+                    "name": parts[0],
+                    "data_type": parts[1],
+                    "max_length": parts[2],
+                    "nullable": parts[3],
+                    "precision": parts[4],
+                    "scale": parts[5],
+                    "ordinal": parts[6],
+                    "identity": len(parts) > 7 and parts[7] == "1"
+                })
+        return columns
+
+    def get_primary_key(self, database, schema, table):
+        query = (
+            "USE [{}]; SET NOCOUNT ON; SELECT c.COLUMN_NAME "
+            "FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+            "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c "
+            "ON tc.CONSTRAINT_NAME = c.CONSTRAINT_NAME "
+            "WHERE tc.TABLE_SCHEMA = '{}' AND tc.TABLE_NAME = '{}' "
+            "AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY' "
+            "ORDER BY c.ORDINAL_POSITION"
+        ).format(database, schema, table)
+        output = self._run_sqlcmd(query, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        cols = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if line:
+                cols.append(line)
+        return cols
+
+    def _build_create_table_sql(self, database, schema, table):
+        columns = self.get_column_info(database, schema, table)
+        pk_cols = self.get_primary_key(database, schema, table)
+
+        parts = []
+        for col in columns:
+            type_str = col["data_type"]
+            if type_str in ("varchar", "nvarchar", "char", "nchar", "varbinary"):
+                ml = col["max_length"]
+                if ml == "-1":
+                    type_str += "(MAX)"
+                elif ml and ml != "None":
+                    type_str += "({})".format(ml)
+            elif type_str in ("decimal", "numeric"):
+                if col["precision"] and col["precision"] != "None":
+                    type_str += "({}, {})".format(col["precision"], col["scale"] or "0")
+
+            col_def = "    [{}] {}".format(col["name"], type_str)
+            if col["identity"] == True or col["identity"] == "1":
+                col_def += " IDENTITY(1,1)"
+            if col["nullable"] == "NO":
+                col_def += " NOT NULL"
+            else:
+                col_def += " NULL"
+            parts.append(col_def)
+
+        if pk_cols:
+            pk_str = ", ".join("[{}]".format(c) for c in pk_cols)
+            parts.append("    CONSTRAINT [PK_{}_{}] PRIMARY KEY ({})".format(
+                table, schema, pk_str
+            ))
+
+        return "CREATE TABLE [{}].[{}] (\n{}\n);\nGO\n".format(
+            schema, table, ",\n".join(parts)
+        )
+
+    def _write_file_to_container(self, content, container_path):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+            f.write(content)
+            local_tmp = f.name
+        try:
+            DockerOps.copy_to_container(self.container, local_tmp, container_path)
+        finally:
+            os.unlink(local_tmp)
+
+    def export_for_downgrade(self, database, tables, export_dir_in_container):
+        schema_sql = ""
+        for schema, table in tables:
+            schema_sql += self._build_create_table_sql(database, schema, table)
+
+        schema_file = "{}/{}_schema.sql".format(export_dir_in_container, database)
+        self._write_file_to_container(schema_sql, schema_file)
+
+        data_files = []
+        for schema, table in tables:
+            csv_file = "{}/{}.{}.tsv".format(export_dir_in_container, schema, table)
+            self._run_bcp([
+                "{}.[{}].[{}]".format(database, schema, table),
+                "out", csv_file, "-c",
+            ], timeout=600)
+            data_files.append((schema, table, csv_file))
+
+        return schema_file, data_files
+
+    def run_sql_script(self, script_path):
+        self._detect_sqlcmd()
+        cmd = [
+            self.sqlcmd_path,
+            "-S", "localhost",
+            "-U", "sa",
+            "-P", self.password,
+            "-i", script_path,
+            "-b"
+        ] + self.sqlcmd_flags
+        return DockerOps.exec_command(self.container, cmd, timeout=600)
 
     def drop_database(self, database):
         self._run_sqlcmd(
