@@ -352,45 +352,46 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         action_group = QGroupBox("Aksi")
-        action_layout = QVBoxLayout(action_group)
+        action_layout = QGridLayout(action_group)
+        action_layout.setSpacing(6)
 
         self.backup_btn = self._make_action_button(
             "Backup Database", "Pilih database lalu klik untuk backup"
         )
         self.backup_btn.clicked.connect(self._do_backup)
-        action_layout.addWidget(self.backup_btn)
+        action_layout.addWidget(self.backup_btn, 0, 0)
 
         self.restore_btn = self._make_action_button(
             "Restore Database", "Pilih file .bak lalu restore ke container"
         )
         self.restore_btn.clicked.connect(self._do_restore)
-        action_layout.addWidget(self.restore_btn)
+        action_layout.addWidget(self.restore_btn, 0, 1)
 
         self.copy_btn = self._make_action_button(
             "Copy Database", "Copy database dalam satu container dengan nama baru"
         )
         self.copy_btn.clicked.connect(self._do_copy_database)
-        action_layout.addWidget(self.copy_btn)
+        action_layout.addWidget(self.copy_btn, 1, 0)
+
+        self.drop_btn = self._make_action_button(
+            "Hapus Database", "Hapus database dari container"
+        )
+        self.drop_btn.clicked.connect(self._do_drop_database)
+        action_layout.addWidget(self.drop_btn, 1, 1)
 
         self.export_btn = self._make_action_button(
             "Export Cross-Version",
             "Export database sebagai schema + data (bcp) agar bisa di-restore ke versi SQL lebih rendah"
         )
         self.export_btn.clicked.connect(self._do_export_downgrade)
-        action_layout.addWidget(self.export_btn)
+        action_layout.addWidget(self.export_btn, 2, 0)
 
         self.import_btn = self._make_action_button(
             "Import Cross-Version",
             "Import database dari hasil Export Cross-Version"
         )
         self.import_btn.clicked.connect(self._do_import_downgrade)
-        action_layout.addWidget(self.import_btn)
-
-        self.drop_btn = self._make_action_button(
-            "Hapus Database", "Hapus database dari container"
-        )
-        self.drop_btn.clicked.connect(self._do_drop_database)
-        action_layout.addWidget(self.drop_btn)
+        action_layout.addWidget(self.import_btn, 2, 1)
 
         right_layout.addWidget(action_group)
 
@@ -423,11 +424,10 @@ class MainWindow(QMainWindow):
 
     def _make_action_button(self, text, tooltip):
         btn = QPushButton(text)
-        btn.setMinimumHeight(48)
+        btn.setMinimumHeight(38)
         btn.setToolTip(tooltip)
         font = btn.font()
-        font.setPointSize(13)
-        font.setBold(True)
+        font.setPointSize(11)
         btn.setFont(font)
         return btn
 
