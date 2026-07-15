@@ -18,7 +18,7 @@ Aplikasi GUI desktop untuk mengelola database SQL Server yang berjalan di contai
 
 ## Tangkapan Layar
 
-<img width="760" alt="Aplikasi" src="https://github.com/user-attachments/assets/ab6ca5b8-5f20-4f9a-a9b8-2a6a17185e16" />
+<img width="888" height="762" alt="SQLServerDockerManager" src="https://github.com/user-attachments/assets/6882ba59-43fe-44b8-9318-270fbeb75f35" />
 
 ## Persyaratan Sistem
 
