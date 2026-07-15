@@ -400,10 +400,11 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(folder_btn)
 
         content.addWidget(right_widget, 1)
-        main_layout.addLayout(content)
+        main_layout.addLayout(content, 1)
 
         progress_group = QGroupBox("Proses")
         progress_layout = QVBoxLayout(progress_group)
+        progress_layout.setContentsMargins(8, 8, 8, 2)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -411,12 +412,12 @@ class MainWindow(QMainWindow):
 
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
         self.log_area.setMinimumHeight(80)
+        self.log_area.document().setDocumentMargin(2)
         self.log_area.setFont(QFont("Monospace", 9))
         progress_layout.addWidget(self.log_area)
 
-        main_layout.addWidget(progress_group)
+        main_layout.addWidget(progress_group, 2)
 
         self.status_label = QLabel("Siap. Klik Connect untuk terhubung ke container.")
         self.status_label.setStyleSheet("color: #555;")
