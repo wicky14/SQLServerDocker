@@ -1,5 +1,6 @@
 import os
 import datetime
+import re
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -364,15 +365,18 @@ class ImportDowngradeWorker(QThread):
             DockerOps.mkdir(self.container, import_container_dir)
 
             self.progress.emit("Menyalin file ke container...", 10)
-            local_schema = os.path.join(self.import_dir, schema_file)
+            with open(os.path.join(self.import_dir, schema_file), "r") as f:
+                schema_content = f.read()
             container_schema = "{}/{}".format(import_container_dir, schema_file)
-            DockerOps.copy_to_container(self.container, local_schema, container_schema)
+            DockerOps.write_text_file(self.container, schema_content, container_schema)
 
             container_csv_files = []
             for schema, table, csv_file in data_files:
                 local_csv = os.path.join(self.import_dir, csv_file)
+                with open(local_csv, "r") as f:
+                    csv_content = f.read()
                 container_csv = "{}/{}".format(import_container_dir, csv_file)
-                DockerOps.copy_to_container(self.container, local_csv, container_csv)
+                DockerOps.write_text_file(self.container, csv_content, container_csv)
                 container_csv_files.append((schema, table, container_csv))
 
             self.progress.emit("Membuat database '{}'...".format(self.database), 25)
@@ -383,7 +387,73 @@ class ImportDowngradeWorker(QThread):
             sql._run_sqlcmd("CREATE DATABASE [{}]".format(self.database), timeout=60)
 
             self.progress.emit("Menjalankan schema SQL...", 35)
-            sql.run_sql_script(container_schema)
+            try:
+                sql.run_sql_script(container_schema, database=self.database)
+                self.progress.emit("Schema SQL selesai.", 38)
+            except DockerExecError as e:
+                self.progress.emit("Beberapa objek gagal (wajar untuk cross-version), melanjutkan import data...", 38)
+
+            # Check failed objects and save fix file
+            try:
+                r = DockerOps.exec_command(self.container, [
+                    sql.sqlcmd_path, "-S", "localhost", "-U", "sa",
+                    "-P", self.password, "-d", self.database,
+                    "-Q", "SET NOCOUNT ON; SELECT type, name FROM sys.objects WHERE is_ms_shipped=0 AND type IN ('V','P','FN','IF','TF')",
+                    "-W", "-C",
+                ])
+                target_objects = set()
+                for line in r.split("\n"):
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[0] in ("V","P","FN","IF","TF"):
+                        target_objects.add(parts[1])
+
+                schema_file_local = None
+                for f in os.listdir(self.import_dir):
+                    if f.endswith("_schema.sql"):
+                        schema_file_local = os.path.join(self.import_dir, f)
+                        break
+                if schema_file_local:
+                    with open(schema_file_local) as f:
+                        schema_sql = f.read()
+
+                    import re
+                    current_stmt = []
+                    failed_stmts = []
+                    for line in schema_sql.split("\n"):
+                        current_stmt.append(line)
+                        if line.strip().upper() == "GO":
+                            stmt = "\n".join(current_stmt)
+                            m = re.search(
+                                r"CREATE\s+(?:OR\s+ALTER\s+)?(VIEW|PROCEDURE|FUNCTION|TRIGGER)\s+"
+                                r"(?:\[?\w+\]?\.)?\[?(\w+)\]?",
+                                stmt, re.I
+                            )
+                            if m:
+                                obj_name = m.group(2)
+                                if obj_name not in target_objects:
+                                    failed_stmts.append(stmt)
+                            current_stmt = []
+
+                    if failed_stmts:
+                        fix_path = os.path.join(self.import_dir, "GaplekDB_fix_failed_objects.sql")
+                        with open(fix_path, "w") as f:
+                            f.write("-- ============================================================\n")
+                            f.write("-- OBJEK YANG GAGAL DI IMPORT ({})\n".format(
+                                datetime.datetime.now().isoformat()))
+                            f.write("-- Target: {} (SQL 2022)\n".format(self.container))
+                            f.write("-- Database: {}\n".format(self.database))
+                            f.write("--\n")
+                            f.write("-- CARA PAKAI:\n")
+                            f.write("-- Buka di SSMS, konek ke sql2022, pilih DB [{}],\n".format(self.database))
+                            f.write("-- copy-paste per objek, perbaiki syntax error, lalu jalankan.\n")
+                            f.write("-- ============================================================\n\n")
+                            f.write("USE [{}];\nGO\n\n".format(self.database))
+                            for s in failed_stmts:
+                                f.write(s + "\n")
+                        self.progress.emit("{} objek gagal. File fix: {}".format(
+                            len(failed_stmts), fix_path), 38)
+            except Exception:
+                pass
 
             total = len(container_csv_files)
             for i, (schema, table, csv_path) in enumerate(container_csv_files):

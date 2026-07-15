@@ -40,7 +40,7 @@ class SqlOps:
         else:
             self.sqlcmd_flags = []
 
-    def _run_sqlcmd(self, query, timeout=120, extra_flags=None):
+    def _run_sqlcmd(self, query, timeout=120, extra_flags=None, database=None):
         self._detect_sqlcmd()
         cmd = [
             self.sqlcmd_path,
@@ -50,9 +50,16 @@ class SqlOps:
             "-Q", query,
             "-W",
         ] + self.sqlcmd_flags
+        if database:
+            cmd.extend(["-d", database])
         if extra_flags:
             cmd.extend(extra_flags)
-        return DockerOps.exec_command(self.container, cmd, timeout=timeout)
+        env = None
+        if "mssql-tools18" in self.sqlcmd_path:
+            env = {"TRUSTSERVERCERTIFICATE": "yes", "SQLCMDENCRYPT": "optional"}
+        output = DockerOps.exec_command(self.container, cmd, timeout=timeout, env=env)
+        lines = [l for l in output.split("\n") if "Changed database context" not in l]
+        return "\n".join(lines)
 
     def test_connection(self):
         try:
@@ -153,9 +160,19 @@ class SqlOps:
 
     def _run_bcp(self, args, timeout=300):
         bcp = self._get_bcp_path()
-        cmd = [bcp] + args + ["-S", "localhost", "-U", "sa", "-P", self.password]
         if "mssql-tools18" in bcp:
-            cmd.append("-C")
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+            dsn_name = "MSSQLTrusted"
+            dsn_file = "/tmp/bcp_odbc_{}.ini".format(ts)
+            dsn_content = "[{}]\nDriver=ODBC Driver 18 for SQL Server\nServer=localhost,1433\nTrustServerCertificate=yes\n".format(dsn_name)
+            DockerOps.exec_command(self.container, [
+                "bash", "-c",
+                "cat > '{}' << 'EOF'\n{}\nEOF".format(dsn_file, dsn_content)
+            ])
+            cmd = [bcp] + args + ["-D", "-S", dsn_name, "-U", "sa", "-P", self.password]
+            return DockerOps.exec_command(self.container, cmd, timeout=timeout,
+                env={"ODBCINI": dsn_file})
+        cmd = [bcp] + args + ["-S", "localhost", "-U", "sa", "-P", self.password]
         return DockerOps.exec_command(self.container, cmd, timeout=timeout)
 
     def get_user_tables(self, database):
@@ -260,19 +277,350 @@ class SqlOps:
             schema, table, ",\n".join(parts)
         )
 
+    def _get_indexes(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(i.object_id), OBJECT_NAME(i.object_id),
+            i.name, i.type_desc, i.is_unique, i.has_filter,
+            ISNULL(i.filter_definition, '')
+        FROM sys.indexes i
+        WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0
+          AND i.name IS NOT NULL AND OBJECTPROPERTY(i.object_id, 'IsUserTable') = 1
+        ORDER BY OBJECT_SCHEMA_NAME(i.object_id), OBJECT_NAME(i.object_id), i.index_id
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        indexes = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 7:
+                indexes.append({
+                    "schema": parts[0], "table": parts[1], "name": parts[2],
+                    "type": parts[3], "unique": parts[4] == "1",
+                    "filtered": parts[5] == "1", "filter_def": parts[6]
+                })
+        return indexes
+
+    def _get_index_columns(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(ic.object_id), OBJECT_NAME(ic.object_id),
+            i.name, c.name, ic.key_ordinal, ic.is_included_column, ic.is_descending_key
+        FROM sys.index_columns ic
+        JOIN sys.indexes i ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0
+          AND i.name IS NOT NULL AND OBJECTPROPERTY(ic.object_id, 'IsUserTable') = 1
+        ORDER BY OBJECT_SCHEMA_NAME(ic.object_id), OBJECT_NAME(ic.object_id), i.name, ic.key_ordinal
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        cols = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 7:
+                cols.append({
+                    "schema": parts[0], "table": parts[1], "index": parts[2],
+                    "column": parts[3], "ordinal": int(parts[4]),
+                    "included": parts[5] == "1", "descending": parts[6] == "1"
+                })
+        return cols
+
+    def _build_indexes_sql(self, database):
+        indexes = self._get_indexes(database)
+        if not indexes:
+            return ""
+        index_cols = self._get_index_columns(database)
+        col_map = {}
+        for c in index_cols:
+            key = (c["schema"], c["table"], c["index"])
+            col_map.setdefault(key, []).append(c)
+
+        sql = "\n-- Indexes\n"
+        for idx in indexes:
+            key = (idx["schema"], idx["table"], idx["name"])
+            cols = col_map.get(key, [])
+            key_cols = [c for c in cols if not c["included"]]
+            inc_cols = [c for c in cols if c["included"]]
+
+            key_cols.sort(key=lambda x: x["ordinal"])
+            key_str = ", ".join(
+                "[{}] {}".format(c["column"], "DESC" if c["descending"] else "")
+                for c in key_cols
+            )
+
+            unique_str = "UNIQUE " if idx["unique"] else ""
+            clustered_str = ""
+            if idx["type"] == "CLUSTERED":
+                clustered_str = "CLUSTERED "
+            elif idx["type"] == "NONCLUSTERED":
+                clustered_str = "NONCLUSTERED "
+
+            inc_str = ""
+            if inc_cols:
+                inc_str = "\nINCLUDE ({})".format(
+                    ", ".join("[{}]".format(c["column"]) for c in inc_cols)
+                )
+
+            filter_str = ""
+            if idx["filtered"] and idx["filter_def"]:
+                filter_str = "\nWHERE {}".format(idx["filter_def"])
+
+            sql += "CREATE {}{}INDEX [{}] ON [{}].[{}] ({}){} {};\nGO\n".format(
+                unique_str, clustered_str, idx["name"],
+                idx["schema"], idx["table"], key_str,
+                inc_str, filter_str
+            )
+        return sql
+
+    def _get_foreign_keys(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id),
+            fk.name,
+            OBJECT_SCHEMA_NAME(fk.referenced_object_id), OBJECT_NAME(fk.referenced_object_id),
+            fk.delete_referential_action, fk.update_referential_action
+        FROM sys.foreign_keys fk
+        WHERE OBJECTPROPERTY(fk.parent_object_id, 'IsUserTable') = 1
+        ORDER BY OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id), fk.name
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        fks = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 7:
+                fks.append({
+                    "schema": parts[0], "table": parts[1], "name": parts[2],
+                    "ref_schema": parts[3], "ref_table": parts[4],
+                    "delete_action": int(parts[5]), "update_action": int(parts[6])
+                })
+        return fks
+
+    def _get_foreign_key_columns(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(fkc.parent_object_id), OBJECT_NAME(fkc.parent_object_id),
+            OBJECT_NAME(fkc.constraint_object_id),
+            c1.name, c2.name
+        FROM sys.foreign_key_columns fkc
+        JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
+        JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id
+        ORDER BY OBJECT_SCHEMA_NAME(fkc.parent_object_id), OBJECT_NAME(fkc.parent_object_id),
+            OBJECT_NAME(fkc.constraint_object_id), fkc.constraint_column_id
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        cols = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 5:
+                cols.append({
+                    "schema": parts[0], "table": parts[1], "fk": parts[2],
+                    "parent_col": parts[3], "ref_col": parts[4]
+                })
+        return cols
+
+    def _build_foreign_keys_sql(self, database):
+        fks = self._get_foreign_keys(database)
+        if not fks:
+            return ""
+        fk_cols = self._get_foreign_key_columns(database)
+        col_map = {}
+        for c in fk_cols:
+            key = (c["schema"], c["table"], c["fk"])
+            col_map.setdefault(key, []).append(c)
+
+        action_map = {0: "NO ACTION", 1: "CASCADE", 2: "SET NULL", 3: "SET DEFAULT"}
+        sql = "\n-- Foreign Keys\n"
+        for fk in fks:
+            key = (fk["schema"], fk["table"], fk["name"])
+            cols = col_map.get(key, [])
+            parent_cols = ", ".join("[{}]".format(c["parent_col"]) for c in cols)
+            ref_cols = ", ".join("[{}]".format(c["ref_col"]) for c in cols)
+            del_act = action_map.get(fk["delete_action"], "NO ACTION")
+            upd_act = action_map.get(fk["update_action"], "NO ACTION")
+            sql += (
+                "ALTER TABLE [{}].[{}] WITH CHECK ADD CONSTRAINT [{}] "
+                "FOREIGN KEY ({}) REFERENCES [{}].[{}] ({}) "
+                "ON DELETE {} ON UPDATE {};\nGO\n"
+            ).format(fk["schema"], fk["table"], fk["name"],
+                     parent_cols, fk["ref_schema"], fk["ref_table"], ref_cols,
+                     del_act, upd_act)
+        return sql
+
+    def _get_defaults(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(dc.parent_object_id), OBJECT_NAME(dc.parent_object_id),
+            c.name, dc.name, dc.definition
+        FROM sys.default_constraints dc
+        JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+        WHERE OBJECTPROPERTY(dc.parent_object_id, 'IsUserTable') = 1
+        ORDER BY OBJECT_SCHEMA_NAME(dc.parent_object_id), OBJECT_NAME(dc.parent_object_id), dc.name
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        defaults = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 5:
+                defaults.append({
+                    "schema": parts[0], "table": parts[1],
+                    "column": parts[2], "name": parts[3], "definition": parts[4]
+                })
+        return defaults
+
+    def _build_defaults_sql(self, database):
+        defaults = self._get_defaults(database)
+        if not defaults:
+            return ""
+        sql = "\n-- Default Constraints\n"
+        for d in defaults:
+            sql += (
+                "ALTER TABLE [{}].[{}] ADD CONSTRAINT [{}] "
+                "DEFAULT {} FOR [{}];\nGO\n"
+            ).format(d["schema"], d["table"], d["name"], d["definition"], d["column"])
+        return sql
+
+    def _get_check_constraints(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT OBJECT_SCHEMA_NAME(cc.parent_object_id), OBJECT_NAME(cc.parent_object_id),
+            cc.name, cc.definition
+        FROM sys.check_constraints cc
+        WHERE OBJECTPROPERTY(cc.parent_object_id, 'IsUserTable') = 1
+        ORDER BY OBJECT_SCHEMA_NAME(cc.parent_object_id), OBJECT_NAME(cc.parent_object_id), cc.name
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        checks = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 4:
+                checks.append({
+                    "schema": parts[0], "table": parts[1],
+                    "name": parts[2], "definition": parts[3]
+                })
+        return checks
+
+    def _build_check_constraints_sql(self, database):
+        checks = self._get_check_constraints(database)
+        if not checks:
+            return ""
+        sql = "\n-- Check Constraints\n"
+        for c in checks:
+            sql += (
+                "ALTER TABLE [{}].[{}] WITH CHECK ADD CONSTRAINT [{}] "
+                "CHECK ({});\nGO\n"
+            ).format(c["schema"], c["table"], c["name"], c["definition"])
+        return sql
+
+    def _get_modules(self, database):
+        q = """
+        USE [{}]; SET NOCOUNT ON;
+        SELECT o.type, OBJECT_SCHEMA_NAME(o.object_id), o.name,
+            ISNULL(OBJECT_SCHEMA_NAME(o.parent_object_id), ''),
+            ISNULL(OBJECT_NAME(o.parent_object_id), '')
+        FROM sys.sql_modules m
+        JOIN sys.objects o ON m.object_id = o.object_id
+        WHERE o.type IN ('V', 'P', 'FN', 'TF', 'IF', 'TR')
+          AND o.is_ms_shipped = 0
+        ORDER BY CASE o.type
+            WHEN 'V' THEN 1 WHEN 'FN' THEN 2 WHEN 'IF' THEN 3
+            WHEN 'TF' THEN 4 WHEN 'P' THEN 5 WHEN 'TR' THEN 6 ELSE 7
+        END, OBJECT_SCHEMA_NAME(o.object_id), o.name
+        """.format(database)
+        output = self._run_sqlcmd(q, extra_flags=["-s", "|", "-h", "-1"], timeout=30)
+        modules = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 5:
+                modules.append({
+                    "type": parts[0], "schema": parts[1], "name": parts[2],
+                    "parent_schema": parts[3], "parent_object": parts[4]
+                })
+        return modules
+
+    def _get_module_definition(self, database, schema, name, type_char):
+        self._detect_sqlcmd()
+        q = """
+        SET TEXTSIZE 2147483647; SET NOCOUNT ON;
+        SELECT m.definition
+        FROM sys.sql_modules m
+        JOIN sys.objects o ON m.object_id = o.object_id
+        WHERE OBJECT_SCHEMA_NAME(o.object_id) = '{}'
+          AND o.name = '{}' AND o.type = '{}'
+        """.format(schema, name, type_char)
+        cmd = [
+            self.sqlcmd_path,
+            "-S", "localhost",
+            "-U", "sa",
+            "-P", self.password,
+            "-d", database,
+            "-Q", q,
+            "-y", "0",
+        ] + self.sqlcmd_flags
+        env = None
+        if "mssql-tools18" in self.sqlcmd_path:
+            env = {"TRUSTSERVERCERTIFICATE": "yes", "SQLCMDENCRYPT": "optional"}
+        output = DockerOps.exec_command(self.container, cmd, timeout=30, env=env)
+        lines = [l.strip() for l in output.split("\n")
+                 if l.strip() and "Changed database context" not in l
+                 and l.strip() != "definition" and not l.strip().startswith("---")
+                 and not re.match(r"^\(\d+ rows? affected\)$", l.strip())]
+        return "\n".join(lines)
+
+    def _build_schema_sql(self, database, tables):
+        sql = "-- Schema untuk database: [{}]\n-- Generated: {}\n\n".format(
+            database, datetime.datetime.now().isoformat()
+        )
+        for schema, table in tables:
+            sql += self._build_create_table_sql(database, schema, table)
+        sql += self._build_indexes_sql(database)
+        sql += self._build_defaults_sql(database)
+        sql += self._build_check_constraints_sql(database)
+        sql += self._build_foreign_keys_sql(database)
+        modules = self._get_modules(database)
+        for type_list, label in [(['V'],"Views"), (['FN','IF','TF'],"Functions"),
+                                  (['P'],"Stored Procedures"), (['TR'],"Triggers")]:
+            subset = [m for m in modules if m["type"] in type_list]
+            if not subset:
+                continue
+            sql += "\n-- {}\n".format(label)
+            for m in subset:
+                try:
+                    defn = self._get_module_definition(database, m["schema"], m["name"], m["type"])
+                    if defn:
+                        if not defn.strip().upper().startswith("CREATE"):
+                            defn = "CREATE [{}].[{}] AS\n{}".format(m["schema"], m["name"], defn)
+                        sql += defn + "\nGO\n"
+                except DockerExecError as e:
+                    sql += "-- GAGAL: [{}].[{}] - {}\n".format(m["schema"], m["name"], str(e)[:80])
+                except Exception as e:
+                    sql += "-- GAGAL: [{}].[{}] - {}\n".format(m["schema"], m["name"], str(e)[:80])
+        return sql
+
     def _write_file_to_container(self, content, container_path):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
-            f.write(content)
-            local_tmp = f.name
-        try:
-            DockerOps.copy_to_container(self.container, local_tmp, container_path)
-        finally:
-            os.unlink(local_tmp)
+        DockerOps.write_text_file(self.container, content.encode("utf-8"), container_path)
 
     def export_for_downgrade(self, database, tables, export_dir_in_container):
-        schema_sql = ""
-        for schema, table in tables:
-            schema_sql += self._build_create_table_sql(database, schema, table)
+        schema_sql = self._build_schema_sql(database, tables)
 
         schema_file = "{}/{}_schema.sql".format(export_dir_in_container, database)
         self._write_file_to_container(schema_sql, schema_file)
@@ -288,7 +636,7 @@ class SqlOps:
 
         return schema_file, data_files
 
-    def run_sql_script(self, script_path):
+    def run_sql_script(self, script_path, database=None):
         self._detect_sqlcmd()
         cmd = [
             self.sqlcmd_path,
@@ -296,8 +644,10 @@ class SqlOps:
             "-U", "sa",
             "-P", self.password,
             "-i", script_path,
-            "-b"
+            "-W",
         ] + self.sqlcmd_flags
+        if database:
+            cmd.extend(["-d", database])
         return DockerOps.exec_command(self.container, cmd, timeout=600)
 
     def drop_database(self, database):

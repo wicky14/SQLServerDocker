@@ -17,14 +17,18 @@ class DockerOps:
         return shutil.which("docker") is not None
 
     @staticmethod
-    def _run(cmd, timeout=120):
+    def _run(cmd, timeout=120, input_data=None):
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
+            kwargs = {"capture_output": True, "timeout": timeout}
+            if input_data is not None:
+                kwargs["input"] = input_data
+                if isinstance(input_data, str):
+                    kwargs["text"] = True
+                else:
+                    kwargs["text"] = False
+            else:
+                kwargs["text"] = True
+            proc = subprocess.run(cmd, **kwargs)
             return proc
         except FileNotFoundError:
             raise DockerNotAvailableError(
@@ -60,13 +64,18 @@ class DockerOps:
         return containers
 
     @staticmethod
-    def exec_command(container, cmd, timeout=120, user=None):
+    def exec_command(container, cmd, timeout=120, user=None, env=None, input_data=None):
         docker_cmd = ["docker", "exec"]
+        if env:
+            for key, val in env.items():
+                docker_cmd.extend(["-e", "{}={}".format(key, val)])
         if user:
             docker_cmd.extend(["--user", str(user)])
+        if input_data is not None:
+            docker_cmd.append("-i")
         docker_cmd.append(container)
         docker_cmd.extend(cmd)
-        proc = DockerOps._run(docker_cmd, timeout=timeout)
+        proc = DockerOps._run(docker_cmd, timeout=timeout, input_data=input_data)
         if proc.returncode != 0:
             raise DockerExecError(
                 "Gagal menjalankan perintah di container '{}':\n{}".format(
@@ -74,6 +83,7 @@ class DockerOps:
                 )
             )
         return proc.stdout.strip()
+
 
     @staticmethod
     def copy_to_container(container, src, dst):
@@ -111,3 +121,10 @@ class DockerOps:
     @staticmethod
     def remove_file(container, path):
         DockerOps._run(["docker", "exec", container, "rm", "-f", path])
+
+    @staticmethod
+    def write_text_file(container, content, path):
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        DockerOps.exec_command(container, ["bash", "-c", "cat > '{}'".format(path)],
+            input_data=content)

@@ -1,12 +1,27 @@
 import sys
 import os
+import traceback
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 
 from app import MainWindow
 from app.installer import handle as installer_handle
+
+
+def exception_hook(exctype, value, tb):
+    msg = "".join(traceback.format_exception(exctype, value, tb))
+    try:
+        error_box = QMessageBox()
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setWindowTitle("Unhandled Error")
+        error_box.setText(str(value))
+        error_box.setDetailedText(msg)
+        error_box.exec_()
+    except Exception:
+        print(msg, file=sys.stderr)
+    sys.exit(1)
 
 
 def get_icon_path():
@@ -25,6 +40,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    sys.excepthook = exception_hook
     app.setApplicationName("SQL Server Docker Manager")
     app.setOrganizationName("MSSQL-Docker-Tools")
 

@@ -987,4 +987,11 @@ class MainWindow(QMainWindow):
             self.config.get("backup_dir", "~/backups/mssql")
         )
         save_config(self.config)
+
+        if hasattr(self, "worker") and self.worker and self.worker.isRunning():
+            self.worker.quit()
+            if not self.worker.wait(5000):
+                self.worker.terminate()
+                self.worker.wait()
+
         event.accept()
